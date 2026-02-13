@@ -2,20 +2,24 @@ import streamlit as st
 from googleapiclient.discovery import build
 from datetime import datetime, timedelta
 import isodate
+import pandas as pd
 
 # --- 安全なAPIキーの設定 ---
 API_KEY = st.secrets["YOUTUBE_API_KEY"]
 youtube = build('youtube', 'v3', developerKey=API_KEY)
 
-st.set_page_config(page_title="YouTubeリサーチくん", layout="wide")
-st.title("🎥 YouTubeリサーチ専用サイト")
+st.set_page_config(page_title="YouTubeリサーチ Pro", layout="wide")
+st.title("🛡️ YouTubeリサーチ専用 Pro版")
 
 # --- サイドバー：フィルタ設定 ---
-st.sidebar.header("検索フィルタ")
+st.sidebar.header("🔍 検索条件")
 query = st.sidebar.text_input("検索キーワード", value="火災保険")
 duration_type = st.sidebar.radio("動画の長さ", ["すべて", "ショート (1分以内)", "ロング (7分以上)"])
 period = st.sidebar.selectbox("期間", ["全期間", "1ヶ月以内", "2ヶ月以内", "6ヶ月以内", "1年以内"])
 target_level = st.sidebar.select_slider("エンゲージメント段階", options=["段階1", "段階2", "段階3", "段階4", "段階5"], value="段階3")
+
+st.sidebar.header("📊 表示設定")
+sort_by = st.sidebar.selectbox("並び替え順", ["エンゲージメント率順", "再生数順", "新着順"])
 
 def get_published_after(period_str):
     if period_str == "全期間": return None
@@ -33,7 +37,7 @@ def get_level(ratio):
 if st.sidebar.button("リサーチ開始"):
     published_after = get_published_after(period)
     search_res = youtube.search().list(
-        q=query, part="snippet", maxResults=20, type="video", 
+        q=query, part="snippet", maxResults=25, type="video", 
         publishedAfter=published_after, order="relevance"
     ).execute()
 
@@ -43,6 +47,7 @@ if st.sidebar.button("リサーチ開始"):
         st.warning("動画が見つかりませんでした。")
     else:
         v_res = youtube.videos().list(id=','.join(video_ids), part="statistics,contentDetails,snippet").execute()
+        results_list = []
         
         for v in v_res['items']:
             seconds = isodate.parse_duration(v['contentDetails']['duration']).total_seconds()
@@ -57,13 +62,45 @@ if st.sidebar.button("リサーチ開始"):
             current_level = get_level(ratio)
             
             if current_level == target_level:
-                col1, col2 = st.columns([1, 2])
-                with col1:
-                    st.image(v['snippet']['thumbnails']['high']['url'])
-                with col2:
-                    st.subheader(v['snippet']['title'])
-                    st.write(f"📺 **再生回数:** {views:,} 回 / 👤 **登録者数:** {subs:,} 人")
-                    st.write(f"📈 **段階:** {current_level} (比率: {ratio:.2f})")
-                    st.write(f"📝 **説明:** {v['snippet']['description'][:200]}...")
-                    st.markdown(f"[動画を見る](https://www.youtube.com/watch?v={v['id']})")
-                st.divider()
+                results_list.append({
+                    "title": v['snippet']['title'],
+                    "views": views,
+                    "subs": subs,
+                    "ratio": ratio,
+                    "level": current_level,
+                    "thumb": v['snippet']['thumbnails']['high']['url'],
+                    "desc": v['snippet']['description'],
+                    "url": f"https://www.youtube.com/watch?v={v['id']}"
+                })
+        
+        # 並び替えロジック
+        if sort_by == "エンゲージメント率順":
+            results_list = sorted(results_list, key=lambda x: x['ratio'], reverse=True)
+        elif sort_by == "再生数順":
+            results_list = sorted(results_list, key=lambda x: x['views'], reverse=True)
+
+        # 結果の表示
+        if not results_list:
+            st.info("フィルタ条件に合う動画がこの検索結果にはありませんでした。")
+        else:
+            st.success(f"{len(results_list)}件のバズ動画候補が見つかりました！")
+            
+            # CSVダウンロードボタン
+            df = pd.DataFrame(results_list)
+            st.download_button("結果をCSVで保存", df.to_csv(index=False).encode('utf_8_sig'), "research_result.csv", "text/csv")
+
+            for res in results_list:
+                with st.container():
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        st.image(res['thumb'])
+                    with col2:
+                        st.subheader(res['title'])
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("再生数", f"{res['views']:,}")
+                        m2.metric("登録者数", f"{res['subs']:,}")
+                        m3.metric("比率", f"{res['ratio']:.2f}")
+                        
+                        st.write(f"📝 **説明:** {res['desc'][:150]}...")
+                        st.markdown(f"[👉 動画をチェックする]({res['url']})")
+                    st.divider()
